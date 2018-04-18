@@ -60,8 +60,25 @@ module Fluent
       when ''
         true
       else
-        nil
+        # Current parser passes comment without actual values, e.g. "param #foo".
+        # parser should pass empty string in this case but changing behaviour may break existing environment so keep parser behaviour. Just ignore comment value in boolean handling for now.
+        if str.respond_to?('start_with?') && str.start_with?('#')
+          true
+        else
+          nil
+        end
       end
+    end
+
+    def self.regexp_value(str)
+      return nil unless str
+      return Regexp.compile(str) unless str.start_with?("/")
+      right_slash_position = str.rindex("/")
+      options = str[(right_slash_position + 1)..-1]
+      option = 0
+      option |= Regexp::IGNORECASE if options.include?("i")
+      option |= Regexp::MULTILINE if options.include?("m")
+      Regexp.compile(str[1...right_slash_position], option)
     end
 
     STRING_TYPE = Proc.new { |val, opts|
@@ -83,6 +100,7 @@ module Fluent
     SIZE_TYPE = Proc.new { |val, opts| Config.size_value(val) }
     BOOL_TYPE = Proc.new { |val, opts| Config.bool_value(val) }
     TIME_TYPE = Proc.new { |val, opts| Config.time_value(val) }
+    REGEXP_TYPE = Proc.new { |val, opts| Config.regexp_value(val) }
 
     REFORMAT_VALUE = ->(type, value) {
       if value.nil?
@@ -95,6 +113,7 @@ module Fluent
         when :size then Config.size_value(value)
         when :bool then Config.bool_value(value)
         when :time then Config.time_value(value)
+        when :regexp then Config.regexp_value(value)
         else
           raise "unknown type in REFORMAT: #{type}"
         end

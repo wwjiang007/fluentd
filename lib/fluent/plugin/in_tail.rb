@@ -580,6 +580,8 @@ module Fluent::Plugin
               @pe.update(inode, 0)
             else # file is rotated and new file found
               watcher_needs_update = true
+              # Handle the old log file before renewing TailWatcher [fluentd#1055]
+              @io_handler.on_notify
             end
           else # file is rotated and new file not found
             # Clear RotateHandler to avoid duplicated file watch in same path.
@@ -678,10 +680,15 @@ module Fluent::Plugin
           @iobuf = ''.force_encoding('ASCII-8BIT')
           @lines = []
           @io = nil
+          @notify_mutex = Mutex.new
           @watcher.log.info "following tail of #{@watcher.path}"
         end
 
         def on_notify
+          @notify_mutex.synchronize { handle_notify }
+        end
+
+        def handle_notify
           with_io do |io|
             begin
               read_more = false

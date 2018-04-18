@@ -486,6 +486,7 @@ EOL
         retry_type periodic
         retry_wait 30s
         flush_at_shutdown false # suppress errors in d.instance_shutdown
+        flush_thread_interval 30s
       </buffer>
     ])
 
@@ -501,7 +502,7 @@ EOL
     target_input_driver.end_if{ d.instance.rollback_count > 0 }
     target_input_driver.end_if{ !node.available }
     target_input_driver.run(expect_records: 2, timeout: 25) do
-      d.run(default_tag: 'test', timeout: 20, wait_flush_completion: false, shutdown: false) do
+      d.run(default_tag: 'test', timeout: 20, wait_flush_completion: false, shutdown: false, flush: false) do
         delayed_commit_timeout_value = d.instance.delayed_commit_timeout
         d.feed([[time, records[0]], [time,records[1]]])
       end
@@ -530,6 +531,7 @@ EOL
         retry_type periodic
         retry_wait 30s
         flush_at_shutdown false # suppress errors in d.instance_shutdown
+        flush_thread_interval 30s
       </buffer>
     ])
 
@@ -545,7 +547,7 @@ EOL
     target_input_driver.end_if{ d.instance.rollback_count > 0 }
     target_input_driver.end_if{ !node.available }
     target_input_driver.run(expect_records: 2, timeout: 25) do
-      d.run(default_tag: 'test', timeout: 20, wait_flush_completion: false, shutdown: false) do
+      d.run(default_tag: 'test', timeout: 20, wait_flush_completion: false, shutdown: false, flush: false) do
         delayed_commit_timeout_value = d.instance.delayed_commit_timeout
         d.feed([[time, records[0]], [time,records[1]]])
       end
@@ -662,6 +664,51 @@ EOL
     assert{ events != [] }
     assert_equal(['test', time, records[0]], events[0])
     assert_equal(['test', time, records[1]], events[1])
+  end
+
+  # This test is not 100% but test failed with previous Node implementation which has race condition
+  test 'Node with security is thread-safe on multi threads' do
+    input_conf = TARGET_CONFIG + %[
+                   <security>
+                     self_hostname in.localhost
+                     shared_key fluentd-sharedkey
+                     <client>
+                       host 127.0.0.1
+                     </client>
+                   </security>
+                 ]
+    target_input_driver = create_target_input_driver(conf: input_conf)
+    output_conf = %[
+      send_timeout 51
+      <security>
+        self_hostname localhost
+        shared_key fluentd-sharedkey
+      </security>
+      <server>
+        name test
+        host #{TARGET_HOST}
+        port #{TARGET_PORT}
+        shared_key fluentd-sharedkey
+      </server>
+    ]
+    @d = d = create_driver(output_conf)
+
+    chunk = Fluent::Plugin::Buffer::MemoryChunk.new(Fluent::Plugin::Buffer::Metadata.new(nil, nil, nil))
+    target_input_driver.run(timeout: 15) do
+      d.run(shutdown: false) do
+        node = d.instance.nodes.first
+        arr = []
+        4.times {
+          arr << Thread.new {
+            node.send_data('test', chunk) rescue nil
+          }
+        }
+        arr.each { |a| a.join }
+      end
+    end
+
+    logs = d.logs
+    assert_false(logs.any? { |log| log.include?("invalid format for PONG message") || log.include?("shared key mismatch") }, "'#{logs.last.strip}' happens")
   end
 
   def create_target_input_driver(response_stub: nil, disconnect: false, conf: TARGET_CONFIG)

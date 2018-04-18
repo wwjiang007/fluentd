@@ -38,7 +38,7 @@ module Fluent
 
       CHUNK_KEY_PATTERN = /^[-_.@a-zA-Z0-9]+$/
       CHUNK_KEY_PLACEHOLDER_PATTERN = /\$\{[-_.@$a-zA-Z0-9]+\}/
-      CHUNK_TAG_PLACEHOLDER_PATTERN = /\$\{(tag(?:\[\d+\])?)\}/
+      CHUNK_TAG_PLACEHOLDER_PATTERN = /\$\{(tag(?:\[-?\d+\])?)\}/
       CHUNK_ID_PLACEHOLDER_PATTERN = /\$\{chunk_id\}/
 
       CHUNKING_FIELD_WARN_NUM = 4
@@ -672,7 +672,7 @@ module Fluent
         str.scan(CHUNK_TAG_PLACEHOLDER_PATTERN).map(&:first).each do |ph|
           if ph == "tag"
             parts << -1
-          elsif ph =~ /^tag\[(\d+)\]$/
+          elsif ph =~ /^tag\[(-?\d+)\]$/
             parts << $1.to_i
           end
         end
@@ -708,15 +708,17 @@ module Fluent
             @output_time_formatter_cache[str] ||= Fluent::Timezone.formatter(@timekey_zone, str)
             rvalue = @output_time_formatter_cache[str].call(metadata.timekey)
           end
-          # ${tag}, ${tag[0]}, ${tag[1]}, ...
+          # ${tag}, ${tag[0]}, ${tag[1]}, ... , ${tag[-2]}, ${tag[-1]}
           if @chunk_key_tag
             if str.include?('${tag}')
               rvalue = rvalue.gsub('${tag}', metadata.tag)
             end
             if str =~ CHUNK_TAG_PLACEHOLDER_PATTERN
               hash = {}
-              metadata.tag.split('.').each_with_index do |part, i|
+              tag_parts = metadata.tag.split('.')
+              tag_parts.each_with_index do |part, i|
                 hash["${tag[#{i}]}"] = part
+                hash["${tag[#{i-tag_parts.size}]}"] = part
               end
               rvalue = rvalue.gsub(CHUNK_TAG_PLACEHOLDER_PATTERN, hash)
             end
@@ -1197,7 +1199,7 @@ module Fluent
 
       def force_flush
         if @buffering
-          @buffer.enqueue_all
+          @buffer.enqueue_all(true)
           submit_flush_all
         end
       end
@@ -1313,9 +1315,17 @@ module Fluent
           # This thread don't use `thread_current_running?` because this thread should run in `before_shutdown` phase
           while @output_flush_threads_running
             current_clock = Fluent::Clock.now
-            interval = state.next_clock - current_clock
+            next_retry_time = nil
 
-            if state.next_clock <= current_clock && @retry_mutex.synchronize { @retry ? @retry.next_time <= Time.now : true }
+            @retry_mutex.synchronize do
+              next_retry_time = @retry ? @retry.next_time : nil
+            end
+
+            if state.next_clock > current_clock
+              interval = state.next_clock - current_clock
+            elsif next_retry_time && next_retry_time > Time.now
+              interval = next_retry_time.to_f - Time.now.to_f
+            else
               try_flush
 
               # next_flush_time uses flush_thread_interval or flush_thread_burst_interval (or retrying)

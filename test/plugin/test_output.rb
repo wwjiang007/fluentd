@@ -333,12 +333,30 @@ class OutputTest < Test::Unit::TestCase
 
     data(:new_api => :chunk,
          :old_api => :metadata)
+    test '#extract_placeholders can extract negative index with tag' do |api|
+      @i.configure(config_element('ROOT', '', {}, [config_element('buffer', 'time,tag,key1,key2', {'timekey' => 60*30, 'timekey_zone' => "+0900"})]))
+      assert @i.chunk_key_time
+      assert @i.chunk_key_tag
+      assert_equal ['key1','key2'], @i.chunk_keys
+      tmpl = "/mypath/%Y/%m/%d/%H-%M/${tag}/${tag[-1]}/${tag[-2]}/${key1}/${key2}/tail"
+      t = event_time('2016-04-11 20:30:00 +0900')
+      v = {key1: "value1", key2: "value2"}
+      c = if api == :chunk
+            create_chunk(timekey: t, tag: 'fluentd.test.output', variables: v)
+          else
+            create_metadata(timekey: t, tag: 'fluentd.test.output', variables: v)
+          end
+      assert_equal "/mypath/2016/04/11/20-30/fluentd.test.output/output/test/value1/value2/tail", @i.extract_placeholders(tmpl, c)
+    end
+
+    data(:new_api => :chunk,
+         :old_api => :metadata)
     test '#extract_placeholders removes out-of-range tag part and unknown variable placeholders' do |api|
       @i.configure(config_element('ROOT', '', {}, [config_element('buffer', 'time,tag,key1,key2', {'timekey' => 60*30, 'timekey_zone' => "+0900"})]))
       assert @i.chunk_key_time
       assert @i.chunk_key_tag
       assert_equal ['key1','key2'], @i.chunk_keys
-      tmpl = "/mypath/%Y/%m/%d/%H-%M/${tag}/${tag[3]}/${tag[4]}/${key3}/${key4}/tail"
+      tmpl = "/mypath/%Y/%m/%d/%H-%M/${tag}/${tag[3]}/${tag[-4]}/${key3}/${key4}/tail"
       t = event_time('2016-04-11 20:30:00 +0900')
       v = {key1: "value1", key2: "value2"}
       c = if api == :chunk
@@ -482,6 +500,9 @@ class OutputTest < Test::Unit::TestCase
         end
         assert_nothing_raised do
           @i.placeholder_validate!(:path, "/my/path/${tag}/file.${tag[2]}.log")
+        end
+        assert_nothing_raised do
+          @i.placeholder_validate!(:path, "/my/path/${tag}/file.${tag[-1]}.log")
         end
       end
 
@@ -907,7 +928,8 @@ class OutputTest < Test::Unit::TestCase
 
   sub_test_case 'slow_flush_log_threshold' do
     def invoke_slow_flush_log_threshold_test(i)
-      i.configure(config_element('ROOT', '', {'slow_flush_log_threshold' => 0.5}, [config_element('buffer', '', {"flush_mode" => "immediate"})]))
+      i.configure(config_element('ROOT', '', {'slow_flush_log_threshold' => 0.5},
+                                 [config_element('buffer', '', {"flush_mode" => "immediate", "flush_thread_interval" => 30})]))
       i.start
       i.after_start
 
